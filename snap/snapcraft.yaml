@@ -1,0 +1,58 @@
+name: modrinth-app
+base: core24
+version: '0.13.24'
+summary: The official Modrinth launcher for Minecraft modpacks
+description: |
+  Modrinth App is the official launcher from Modrinth, letting you
+  easily browse, install, and manage Minecraft modpacks and mods
+  from the Modrinth platform.
+grade: stable
+confinement: strict
+
+platforms:
+  amd64:
+    build-on: [amd64]
+    build-for: [amd64]
+
+plugs:
+  browser-support:
+    allow-sandbox: false
+
+parts:
+  modrinth-app:
+    plugin: dump
+    source: modrinth-app.deb
+    source-type: deb
+    override-build: |
+      craftctl default
+      # Rename desktop file — the space in the original name causes issues with
+      # snapd's desktop file installation
+      mv "$CRAFT_PART_INSTALL/usr/share/applications/Modrinth App.desktop" \
+         "$CRAFT_PART_INSTALL/usr/share/applications/modrinth-app.desktop"
+      # Patch icon to absolute snap path; snapd expands ${SNAP} in desktop files
+      sed -i 's|^Icon=.*|Icon=${SNAP}/usr/share/icons/hicolor/256x256@2/apps/ModrinthApp.png|' \
+         "$CRAFT_PART_INSTALL/usr/share/applications/modrinth-app.desktop"
+
+  launcher:
+    plugin: dump
+    source: snap/local
+    organize:
+      launcher: bin/launcher
+
+apps:
+  modrinth-app:
+    command: usr/bin/ModrinthApp
+    extensions: [gnome]
+    command-chain:
+      - bin/launcher
+    desktop: usr/share/applications/modrinth-app.desktop
+    environment:
+      HOME: $SNAP_USER_COMMON
+    plugs:
+      - audio-playback
+      - browser-support
+      - home
+      - joystick
+      - network
+      - network-bind
+      - opengl
