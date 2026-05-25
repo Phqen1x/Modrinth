@@ -9,15 +9,6 @@ Snap packaging for the Modrinth App launcher.
 3. Build the snap (Ubuntu 24.04 host required): `snapcraft pack`
 4. Install locally: `sudo snap install --dangerous modrinth_*.snap`
 
-## Permissions
-
-After installing, connect the additional interfaces used for network monitoring:
-
-```
-sudo snap connect modrinth:network-observe
-sudo snap connect modrinth:network-manager
-```
-
 ## Data location
 
 All app data and modpack installs are stored under `~/snap/modrinth/common`.
