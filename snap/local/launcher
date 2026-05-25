@@ -1,0 +1,67 @@
+#!/bin/sh
+
+# WebKit2GTK's bubblewrap-based subprocess sandbox conflicts with snap's own
+# seccomp/AppArmor confinement, causing a segfault on startup. Disabling
+# WebKit's internal sandbox is safe here because snap confinement provides
+# equivalent isolation.
+export WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1
+
+# xdg-desktop-portal 1.18+ requires a Wayland activation token when
+# opening URIs from sandboxed apps. Tauri doesn't pass one, so the portal
+# rejects the call and the Microsoft OAuth browser window never opens.
+# GTK_USE_PORTAL=0 makes GLib fall back to xdg-open directly, which works.
+export GTK_USE_PORTAL=0
+
+# Prefer snap-provided helpers like our xdg-open wrapper.
+export PATH="$SNAP/bin:$PATH"
+
+# Keep app data inside the snap sandbox instead of the real home directory.
+export XDG_DATA_HOME="$SNAP_USER_COMMON/.local/share"
+export XDG_CONFIG_HOME="$SNAP_USER_COMMON/.config"
+export XDG_CACHE_HOME="$SNAP_USER_COMMON/.cache"
+export XDG_STATE_HOME="$SNAP_USER_COMMON/.local/state"
+export GIO_MODULE_DIR="$XDG_CACHE_HOME/gio-modules"
+
+mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME"
+
+# Clear stale GIO module cache. The GNOME extension caches GIO modules to
+# $SNAP_USER_COMMON/.cache/gio-modules/ from the previous snap revision.
+# libgiolibproxy.so in that cache references libpxbackend-1.0.so via an
+# absolute RUNPATH that doesn't resolve across revisions; rebuilding the cache
+# here keeps GIO modules (including TLS) available for this run.
+gio_module_dir="${GIO_MODULE_DIR:-${XDG_CACHE_HOME:-$SNAP_USER_COMMON/.cache}/gio-modules}"
+
+if [ -n "${SNAP_DESKTOP_RUNTIME:-}" ]; then
+    if [ -n "${SNAP_LAUNCHER_ARCH_TRIPLET:-}" ]; then
+        gio_runtime_libdir="$SNAP_DESKTOP_RUNTIME/usr/lib/$SNAP_LAUNCHER_ARCH_TRIPLET"
+    else
+        case "$SNAP_ARCH" in
+            amd64) arch_triplet="x86_64-linux-gnu" ;;
+            armhf) arch_triplet="arm-linux-gnueabihf" ;;
+            arm64) arch_triplet="aarch64-linux-gnu" ;;
+            ppc64el) arch_triplet="powerpc64le-linux-gnu" ;;
+            *) arch_triplet="$SNAP_ARCH-linux-gnu" ;;
+        esac
+        gio_runtime_libdir="$SNAP_DESKTOP_RUNTIME/usr/lib/$arch_triplet"
+    fi
+
+    gio_querymodules="$gio_runtime_libdir/glib-2.0/gio-querymodules"
+    if [ -x "$gio_querymodules" ]; then
+        if [ ! -f "$gio_module_dir/.snap-rev-$SNAP_REVISION" ] || [ ! -e "$gio_module_dir/libgiognutls.so" ]; then
+            rm -rf "$gio_module_dir"
+            mkdir -p "$gio_module_dir"
+            for module in "$gio_runtime_libdir"/gio/modules/*.so; do
+                if command -v ldd >/dev/null 2>&1; then
+                    if ldd "$module" 2>/dev/null | grep -q "not found"; then
+                        continue
+                    fi
+                fi
+                ln -s "$module" "$gio_module_dir"/
+            done
+            "$gio_querymodules" "$gio_module_dir"
+            touch "$gio_module_dir/.snap-rev-$SNAP_REVISION"
+        fi
+    fi
+fi
+
+exec "$@"

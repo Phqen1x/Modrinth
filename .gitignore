@@ -1,0 +1,14 @@
+# Built snap packages
+*.snap
+
+# Local upstream package
+*.deb
+
+# Snapcraft build directories
+parts/
+stage/
+prime/
+.snapcraft/
+
+# Claude Code local settings
+.claude/

@@ -1,4 +1,4 @@
-name: modrinth-app
+name: modrinth
 base: core24
 version: '0.13.24'
 summary: The official Modrinth launcher for Minecraft modpacks
@@ -38,9 +38,10 @@ parts:
     source: snap/local
     organize:
       launcher: bin/launcher
+      xdg-open: bin/xdg-open
 
 apps:
-  modrinth-app:
+  modrinth:
     command: usr/bin/ModrinthApp
     extensions: [gnome]
     command-chain:
@@ -48,6 +49,7 @@ apps:
     desktop: usr/share/applications/modrinth-app.desktop
     environment:
       HOME: $SNAP_USER_COMMON
+      TMPDIR: $XDG_RUNTIME_DIR
     plugs:
       - audio-playback
       - browser-support
@@ -55,4 +57,7 @@ apps:
       - joystick
       - network
       - network-bind
+      - network-manager
+      - network-observe
+      - network-status
       - opengl
