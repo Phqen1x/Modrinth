@@ -10,6 +10,10 @@ on:
         type: boolean
         default: false
 
+concurrency:
+  group: update-snap
+  cancel-in-progress: false
+
 jobs:
   check-version:
     runs-on: ubuntu-latest
@@ -25,6 +29,14 @@ jobs:
           RELEASE=$(curl -sf https://api.github.com/repos/modrinth/theseus/releases/latest)
           VERSION=$(echo "$RELEASE" | jq -r '.tag_name' | sed 's/^v//')
           DEB_URL=$(echo "$RELEASE" | jq -r '.assets[] | select(.name | test("amd64\\.deb$")) | .browser_download_url')
+          if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
+            echo "ERROR: Could not determine upstream version" >&2
+            exit 1
+          fi
+          if [ -z "$DEB_URL" ] || [ "$DEB_URL" = "null" ]; then
+            echo "ERROR: No amd64.deb asset found in release $VERSION" >&2
+            exit 1
+          fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "deb_url=$DEB_URL" >> "$GITHUB_OUTPUT"
           echo "Upstream version: $VERSION"
@@ -57,8 +69,10 @@ jobs:
     needs: check-version
     if: needs.check-version.outputs.needs_update == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Download Modrinth .deb
         run: |
@@ -71,10 +85,10 @@ jobs:
 
       - name: Build snap
         id: build
-        uses: snapcore/action-build@v1
+        uses: snapcore/action-build@3bdaa03e1ba6bf59a65f84a751d943d549a54e79 # v1
 
       - name: Publish to edge channel
-        uses: snapcore/action-publish@v1
+        uses: snapcore/action-publish@214b86e5ca036ead1668c79afb81e550e6c54d40 # v1
         env:
           SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
         with:
@@ -83,7 +97,7 @@ jobs:
 
       - name: Create GitHub Release for new version
         if: needs.check-version.outputs.deb_version != needs.check-version.outputs.edge_version
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: v${{ needs.check-version.outputs.deb_version }}
           name: Modrinth ${{ needs.check-version.outputs.deb_version }}
