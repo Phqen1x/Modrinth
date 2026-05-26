@@ -1,0 +1,109 @@
+name: Update Modrinth Snap
+
+on:
+  schedule:
+    - cron: '0 8 * * *' # Daily at 08:00 UTC
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Force build even if version is unchanged
+        type: boolean
+        default: false
+
+concurrency:
+  group: update-snap
+  cancel-in-progress: false
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      deb_version: ${{ steps.release.outputs.version }}
+      deb_url: ${{ steps.release.outputs.deb_url }}
+      edge_version: ${{ steps.edge.outputs.version }}
+      needs_update: ${{ steps.compare.outputs.needs_update }}
+    steps:
+      - name: Fetch latest Modrinth release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RELEASE=$(gh api repos/modrinth/theseus/releases/latest)
+          VERSION=$(echo "$RELEASE" | jq -r '.tag_name' | sed 's/^v//')
+          DEB_URL=$(echo "$RELEASE" | jq -r '.assets[] | select(.name | test("amd64\\.deb$")) | .browser_download_url')
+          if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
+            echo "ERROR: Could not determine upstream version" >&2
+            exit 1
+          fi
+          if [ -z "$DEB_URL" ] || [ "$DEB_URL" = "null" ]; then
+            echo "ERROR: No amd64.deb asset found in release $VERSION" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "deb_url=$DEB_URL" >> "$GITHUB_OUTPUT"
+          echo "Upstream version: $VERSION"
+
+      - name: Get current Snap Store edge version
+        id: edge
+        run: |
+          VERSION=$(curl -sf \
+            -H "Snap-Device-Series: 16" \
+            "https://api.snapcraft.io/v2/snaps/info/modrinth" \
+            | jq -r '.["channel-map"][] | select(.channel.name == "latest/edge") | .version // empty' | head -1)
+          echo "version=${VERSION:-none}" >> "$GITHUB_OUTPUT"
+          echo "Edge channel version: ${VERSION:-none}"
+
+      - name: Decide whether a build is needed
+        id: compare
+        run: |
+          DEB="${{ steps.release.outputs.version }}"
+          EDGE="${{ steps.edge.outputs.version }}"
+          FORCE="${{ github.event.inputs.force }}"
+          if [ "$DEB" != "$EDGE" ] || [ "$FORCE" = "true" ]; then
+            echo "needs_update=true" >> "$GITHUB_OUTPUT"
+            echo "Update needed: upstream=$DEB edge=$EDGE force=$FORCE"
+          else
+            echo "needs_update=false" >> "$GITHUB_OUTPUT"
+            echo "Already up to date ($DEB) — skipping build"
+          fi
+
+  build-and-publish:
+    needs: check-version
+    if: needs.check-version.outputs.needs_update == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Download Modrinth .deb
+        run: |
+          curl -fL -o modrinth-app.deb "${{ needs.check-version.outputs.deb_url }}"
+
+      - name: Update version in snapcraft.yaml
+        run: |
+          VERSION="${{ needs.check-version.outputs.deb_version }}"
+          sed -i "s/^version: .*/version: '$VERSION'/" snap/snapcraft.yaml
+
+      - name: Build snap
+        id: build
+        uses: snapcore/action-build@3bdaa03e1ba6bf59a65f84a751d943d549a54e79 # v1
+
+      - name: Publish to edge channel
+        uses: snapcore/action-publish@214b86e5ca036ead1668c79afb81e550e6c54d40 # v1
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+        with:
+          snap: ${{ steps.build.outputs.snap }}
+          release: edge
+
+      - name: Create GitHub Release for new version
+        if: needs.check-version.outputs.deb_version != needs.check-version.outputs.edge_version
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          tag_name: v${{ needs.check-version.outputs.deb_version }}
+          name: Modrinth ${{ needs.check-version.outputs.deb_version }}
+          body: |
+            Modrinth App **${{ needs.check-version.outputs.deb_version }}** has been published to the `edge` channel on the Snap Store.
+
+            Review the upstream changes and promote to stable when ready via the [Snap Store dashboard](https://snapcraft.io/modrinth/releases).
