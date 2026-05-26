@@ -2,7 +2,15 @@
 
 Snap packaging for the Modrinth App launcher.
 
-## Build
+## Install
+
+Install directly from the Snap Store:
+
+```
+sudo snap install modrinth
+```
+
+## Build from source
 
 1. Download the Modrinth App `.deb` and save it as `modrinth-app.deb` in the repository root.
 2. Install Snapcraft: `sudo snap install snapcraft --classic`
