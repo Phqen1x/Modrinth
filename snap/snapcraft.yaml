@@ -1,11 +1,17 @@
 name: modrinth
 base: core24
 version: '0.13.24'
+title: Modrinth
 summary: The official Modrinth launcher for Minecraft modpacks
 description: |
   Modrinth App is the official launcher from Modrinth, letting you
   easily browse, install, and manage Minecraft modpacks and mods
   from the Modrinth platform.
+website: https://modrinth.com/
+issues: https://github.com/Phqen1x/Modrinth/issues
+contact: https://github.com/Phqen1x/Modrinth/issues
+source-code: https://github.com/Phqen1x/Modrinth
+license: Proprietary
 grade: stable
 confinement: strict
 
@@ -32,6 +38,16 @@ parts:
       # Patch icon to absolute snap path; snapd expands ${SNAP} in desktop files
       sed -i 's|^Icon=.*|Icon=${SNAP}/usr/share/icons/hicolor/256x256@2/apps/ModrinthApp.png|' \
          "$CRAFT_PART_INSTALL/usr/share/applications/modrinth-app.desktop"
+      # Neuter the in-app updater — it can't work under strict confinement, so the
+      # "Update" button is a dead end. Tauri only shows that button after a
+      # successful check against the endpoint baked into the binary; corrupting
+      # the URL scheme (https -> httpx) makes the check fail before any network
+      # call, and Modrinth's updater_impl.rs treats a failed check as a no-op.
+      # Must be an in-place, same-length edit so the ELF stays valid.
+      bin="$CRAFT_PART_INSTALL/usr/bin/ModrinthApp"
+      old='https://launcher-files.modrinth.com/updates.json'
+      grep -q "$old" "$bin" || { echo "updater endpoint not found — Modrinth changed it"; exit 1; }
+      perl -0777 -pi -e 's{\Qhttps://launcher-files.modrinth.com/updates.json\E}{httpx://launcher-files.modrinth.com/updates.json}g' "$bin"
 
   launcher:
     plugin: dump
@@ -54,10 +70,7 @@ apps:
       - audio-playback
       - browser-support
       - home
-      - joystick
       - network
       - network-bind
-      - network-manager
-      - network-observe
       - network-status
       - opengl
