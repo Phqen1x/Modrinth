@@ -29,6 +29,18 @@ parts:
     plugin: dump
     source: modrinth-app.deb
     source-type: deb
+    # ModrinthApp uses the native_dialog crate to pop up a GUI message box
+    # whenever Tauri fails to start (corrupt webview, missing GPU driver,
+    # etc). On Linux that crate shells out to zenity, kdialog, or yad — none
+    # of which exist inside this strictly-confined snap. With all three
+    # missing, native_dialog itself returns Err(MissingDep), and main.rs
+    # unwraps that result, so the app panics with "MissingDep" instead of
+    # showing (or even logging) the real initialization error. Staging
+    # zenity gives native_dialog a backend to find on $SNAP/usr/bin, so a
+    # real startup failure surfaces its actual error message instead of
+    # this unrelated crash.
+    stage-packages:
+      - zenity
     override-build: |
       craftctl default
       # Rename desktop file — the space in the original name causes issues with
