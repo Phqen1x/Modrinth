@@ -51,15 +51,22 @@ parts:
       sed -i 's|^Icon=.*|Icon=${SNAP}/usr/share/icons/hicolor/256x256@2/apps/ModrinthApp.png|' \
          "$CRAFT_PART_INSTALL/usr/share/applications/modrinth-app.desktop"
       # Neuter the in-app updater — it can't work under strict confinement, so the
-      # "Update" button is a dead end. Tauri only shows that button after a
-      # successful check against the endpoint baked into the binary; corrupting
-      # the URL scheme (https -> httpx) makes the check fail before any network
-      # call, and Modrinth's updater_impl.rs treats a failed check as a no-op.
+      # "Update" button is a dead end. Tauri validates the updater endpoint's URL
+      # scheme at config-deserialization time, before any network call, and
+      # rejects anything but https ("the configured updater endpoint must use a
+      # secure protocol like `https`") — so corrupting the scheme itself (e.g.
+      # https -> httpx) crashes startup with PluginInitialization instead of
+      # disabling the updater. Instead, keep the https scheme but repoint the
+      # host at the RFC 2606 reserved .invalid TLD, which never resolves: the
+      # scheme check passes, the later network check fails, and Modrinth's
+      # updater_impl.rs treats a failed check as a no-op.
       # Must be an in-place, same-length edit so the ELF stays valid.
       bin="$CRAFT_PART_INSTALL/usr/bin/ModrinthApp"
       old='https://launcher-files.modrinth.com/updates.json'
+      new='https://launcher-files.modrinth.invalid/upd.json'
+      [ "${#old}" -eq "${#new}" ] || { echo "replacement length mismatch — would corrupt the ELF"; exit 1; }
       grep -q "$old" "$bin" || { echo "updater endpoint not found — Modrinth changed it"; exit 1; }
-      perl -0777 -pi -e 's{\Qhttps://launcher-files.modrinth.com/updates.json\E}{httpx://launcher-files.modrinth.com/updates.json}g' "$bin"
+      perl -0777 -pi -e "s{\Q$old\E}{$new}g" "$bin"
 
   launcher:
     plugin: dump
