@@ -1,0 +1,195 @@
+From: Modrinth snap packaging
+Subject: [PATCH] app: make the undecorated window resizable on Linux
+
+Dragging a window edge currently does nothing: Tauri's resize handler isn't
+attached to WindowChild webviews, and WebKitGTK consumes the press before Tao's
+fallback runs. Handle it from capture-phase GTK controllers on the toplevel,
+which run before any webview.
+---
+diff --git a/apps/app/Cargo.toml b/apps/app/Cargo.toml
+index f8c9bb1..faea0ae 100644
+--- a/apps/app/Cargo.toml
++++ b/apps/app/Cargo.toml
+@@ -59,6 +59,7 @@ rustls = { workspace = true, features = ["std"] }
+ tauri-build = { workspace = true, features = ["codegen"] }
+ 
+ [target.'cfg(target_os = "linux")'.dependencies]
++gtk = "0.18"
+ tauri-plugin-updater = { workspace = true, optional = true }
+ 
+ [target.'cfg(target_os = "macos")'.dependencies]
+diff --git a/apps/app/src/linux_resize.rs b/apps/app/src/linux_resize.rs
+new file mode 100644
+index 0000000..0c38ad5
+--- /dev/null
++++ b/apps/app/src/linux_resize.rs
+@@ -0,0 +1,143 @@
++//! Edge resizing for the undecorated main window on Linux.
++//!
++//! Tauri only attaches its resize handler to WindowContent webviews, but the
++//! "unstable" feature needed for the ads child webview makes the main webview a
++//! WindowChild. Tao's fallback on the toplevel never sees the press, as WebKitGTK
++//! consumes it first, so dragging a window edge does nothing. Controllers in the
++//! capture phase on the toplevel run before any webview, including the ads one.
++
++use gtk::gdk::{self, WindowEdge, WindowState};
++use gtk::{glib, prelude::*};
++use std::cell::{Cell, RefCell};
++use std::rc::Rc;
++
++const RESIZE_INSET: f64 = 5.0;
++
++fn hit_test(window: &gtk::ApplicationWindow, x: f64, y: f64) -> Option<WindowEdge> {
++    let gdk_window = window.window()?;
++    if window.is_decorated()
++        || !window.is_resizable()
++        || window.is_maximized()
++        || gdk_window.state().contains(WindowState::FULLSCREEN)
++    {
++        return None;
++    }
++
++    let left = x < RESIZE_INSET;
++    let right = x >= f64::from(window.allocated_width()) - RESIZE_INSET;
++    let top = y < RESIZE_INSET;
++    let bottom = y >= f64::from(window.allocated_height()) - RESIZE_INSET;
++
++    match (left, right, top, bottom) {
++        (true, _, true, _) => Some(WindowEdge::NorthWest),
++        (_, true, true, _) => Some(WindowEdge::NorthEast),
++        (true, _, _, true) => Some(WindowEdge::SouthWest),
++        (_, true, _, true) => Some(WindowEdge::SouthEast),
++        (true, ..) => Some(WindowEdge::West),
++        (_, true, ..) => Some(WindowEdge::East),
++        (_, _, true, _) => Some(WindowEdge::North),
++        (_, _, _, true) => Some(WindowEdge::South),
++        _ => None,
++    }
++}
++
++fn cursor_name(edge: WindowEdge) -> &'static str {
++    match edge {
++        WindowEdge::NorthWest => "nw-resize",
++        WindowEdge::NorthEast => "ne-resize",
++        WindowEdge::SouthWest => "sw-resize",
++        WindowEdge::SouthEast => "se-resize",
++        WindowEdge::West => "w-resize",
++        WindowEdge::East => "e-resize",
++        WindowEdge::North => "n-resize",
++        _ => "s-resize",
++    }
++}
++
++pub fn attach(window: &tauri::Window) {
++    let gtk_window = match window.gtk_window() {
++        Ok(gtk_window) => gtk_window,
++        Err(e) => {
++            tracing::warn!("Failed to get GTK window for edge resizing: {e}");
++            return;
++        }
++    };
++
++    let press = gtk::GestureMultiPress::new(&gtk_window);
++    press.set_button(gdk::BUTTON_PRIMARY);
++    press.set_propagation_phase(gtk::PropagationPhase::Capture);
++    let press_window = gtk_window.clone();
++    press.connect_pressed(move |gesture, _, x, y| {
++        let Some(edge) = hit_test(&press_window, x, y) else {
++            return;
++        };
++        let Some((root_x, root_y)) =
++            gtk::current_event().and_then(|event| event.root_coords())
++        else {
++            return;
++        };
++        let Some(gdk_window) = press_window.window() else {
++            return;
++        };
++
++        gesture.set_state(gtk::EventSequenceState::Claimed);
++        gdk_window.begin_resize_drag(
++            edge,
++            gdk::BUTTON_PRIMARY as i32,
++            root_x as i32,
++            root_y as i32,
++            gtk::current_event_time(),
++        );
++    });
++
++    let motion = gtk::EventControllerMotion::new(&gtk_window);
++    motion.set_propagation_phase(gtk::PropagationPhase::Capture);
++    let motion_window = gtk_window.clone();
++    let on_edge = Rc::new(Cell::new(false));
++    let hooked_widgets = RefCell::new(Vec::<gtk::Widget>::new());
++    motion.connect_motion(move |_, x, y| {
++        let Some(mut event) = gtk::current_event() else {
++            return;
++        };
++        let edge = hit_test(&motion_window, x, y);
++        let was_on_edge = on_edge.replace(edge.is_some());
++
++        // WebKit sets its own cursor on every motion event it receives, so keep
++        // those away from it while the pointer is on an edge. Webviews can be
++        // added at any time, so hook them as the pointer reaches them.
++        if let Some(widget) = gtk::event_widget(&mut event) {
++            let mut hooked_widgets = hooked_widgets.borrow_mut();
++            if !hooked_widgets.contains(&widget) {
++                let on_edge = on_edge.clone();
++                widget.connect_motion_notify_event(move |_, _| {
++                    if on_edge.get() {
++                        glib::Propagation::Stop
++                    } else {
++                        glib::Propagation::Proceed
++                    }
++                });
++                hooked_widgets.push(widget);
++            }
++        }
++
++        let Some(event_window) = event.window() else {
++            return;
++        };
++        match edge {
++            Some(edge) => {
++                let cursor = gdk::Cursor::from_name(
++                    &event_window.display(),
++                    cursor_name(edge),
++                );
++                event_window.set_cursor(cursor.as_ref());
++            }
++            None if was_on_edge => event_window.set_cursor(None),
++            None => {}
++        }
++    });
++
++    // GTK3 controllers don't keep themselves alive, and these are needed for
++    // the rest of the process's lifetime.
++    std::mem::forget(press);
++    std::mem::forget(motion);
++}
+diff --git a/apps/app/src/main.rs b/apps/app/src/main.rs
+index 78ead22..cd01219 100644
+--- a/apps/app/src/main.rs
++++ b/apps/app/src/main.rs
+@@ -17,6 +17,9 @@ mod api;
+ #[cfg(target_os = "macos")]
+ mod macos;
+ 
++#[cfg(target_os = "linux")]
++mod linux_resize;
++
+ #[cfg(feature = "updater")]
+ mod updater_impl;
+ #[cfg(not(feature = "updater"))]
+@@ -296,6 +299,11 @@ fn main() {
+                 ));
+             });
+ 
++            #[cfg(target_os = "linux")]
++            if let Some(window) = app.get_window("main") {
++                linux_resize::attach(&window);
++            }
++
+             #[cfg(not(target_os = "linux"))]
+             if let Some(window) = app.get_window("main")
+                 && let Err(e) = window.set_shadow(true)
