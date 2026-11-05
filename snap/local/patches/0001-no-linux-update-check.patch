@@ -1,0 +1,58 @@
+From: Modrinth snap packaging
+Subject: [PATCH] app-frontend: don't poll for updates on Linux
+
+The snap is updated by snapd, so never fetch updates.json or show the
+"use your package manager to update" popup, which would also fire while a
+release is still waiting to be promoted to stable.
+---
+diff --git a/apps/app-frontend/src/App.vue b/apps/app-frontend/src/App.vue
+index 59328b6..2f1aa1f 100644
+--- a/apps/app-frontend/src/App.vue
++++ b/apps/app-frontend/src/App.vue
+@@ -1733,11 +1733,6 @@ async function checkUpdates() {
+ 	if (!(await areUpdatesEnabled())) {
+ 		console.log('Skipping update check as updates are disabled in this build or environment')
+ 		updatesEnabled.value = false
+-
+-		if (os.value === 'Linux' && !isDevEnvironment.value) {
+-			checkLinuxUpdates()
+-			setInterval(checkLinuxUpdates, 5 * 60 * 1000)
+-		}
+ 		return
+ 	}
+ 
+@@ -1786,34 +1781,6 @@ async function checkUpdates() {
+ 	)
+ }
+ 
+-async function checkLinuxUpdates() {
+-	try {
+-		const [response, currentVersion] = await Promise.all([
+-			fetch('https://launcher-files.modrinth.com/updates.json'),
+-			getVersion(),
+-		])
+-		const updates = await response.json()
+-		const latestVersion = updates?.version
+-
+-		if (latestVersion && latestVersion !== currentVersion) {
+-			markAppUpdateActionable(latestVersion)
+-			const nextPopupTime = getNextAppUpdatePopupTime(latestVersion)
+-			if (nextPopupTime !== null && Date.now() >= nextPopupTime) {
+-				addPopupNotification({
+-					contentType: 'standard',
+-					title: formatMessage(updatePopupMessages.updateAvailable),
+-					text: formatMessage(updatePopupMessages.linuxBody, { version: latestVersion }),
+-					type: 'info',
+-					autoCloseMs: null,
+-				})
+-				markAppUpdatePopupShown(latestVersion)
+-			}
+-		}
+-	} catch (e) {
+-		console.error('Failed to check for updates:', e)
+-	}
+-}
+-
+ async function downloadAvailableUpdate() {
+ 	return downloadUpdate(availableUpdate.value)
+ }

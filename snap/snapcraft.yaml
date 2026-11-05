@@ -1,6 +1,6 @@
 name: modrinth
-base: core24
-version: '0.13.24'
+base: core26
+version: '0.23.1'
 title: Modrinth
 summary: The official Modrinth launcher for Minecraft modpacks
 description: |
@@ -11,7 +11,7 @@ website: https://modrinth.com/
 issues: https://github.com/Phqen1x/Modrinth/issues
 contact: https://github.com/Phqen1x/Modrinth/issues
 source-code: https://github.com/Phqen1x/Modrinth
-license: Proprietary
+license: GPL-3.0-only
 grade: stable
 confinement: strict
 
@@ -26,9 +26,18 @@ plugs:
 
 parts:
   modrinth-app:
-    plugin: dump
-    source: modrinth-app.deb
-    source-type: deb
+    plugin: nil
+    source: https://github.com/modrinth/code.git
+    source-tag: v0.23.1
+    source-depth: 1
+    build-snaps:
+      - node/24/stable
+      - rustup
+    build-packages:
+      - build-essential
+      - jq
+      - openjdk-17-jdk-headless
+      - pkg-config
     # ModrinthApp uses the native_dialog crate to pop up a GUI message box
     # whenever Tauri fails to start (corrupt webview, missing GPU driver,
     # etc). On Linux that crate shells out to zenity, kdialog, or yad — none
@@ -42,7 +51,43 @@ parts:
     stage-packages:
       - zenity
     override-build: |
-      craftctl default
+      version="$(craftctl get version)"
+      tag="$(git describe --tags --exact-match)"
+      [ "$tag" = "v$version" ] || { echo "version $version doesn't match source-tag $tag"; exit 1; }
+
+      for patch in "$CRAFT_PROJECT_DIR"/snap/local/patches/*.patch; do
+        git apply "$patch"
+      done
+
+      # Mirrors the "Set application version and environment" step of upstream's
+      # theseus-build.yml. The tree only carries placeholder versions.
+      sed -i "0,/^version = .*/s//version = \"$version\"/" apps/app/Cargo.toml packages/app-lib/Cargo.toml
+      jq --arg version "$version" '.version = $version' apps/app-frontend/package.json > package.json.tmp
+      mv package.json.tmp apps/app-frontend/package.json
+      cp packages/app-lib/.env.prod packages/app-lib/.env
+
+      export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+      export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+      export CI=true
+      mkdir -p "$CRAFT_PART_BUILD"/.corepack-bin
+      /snap/node/current/bin/corepack enable --install-directory "$CRAFT_PART_BUILD"/.corepack-bin
+      export PATH="$CRAFT_PART_BUILD/.corepack-bin:$PATH"
+      pnpm install --frozen-lockfile
+
+      # Building without upstream's tauri-release.conf.json leaves the "updater"
+      # Cargo feature off. That's the supported way to disable it: the updater
+      # plugin isn't compiled in, are_updates_enabled returns false, and the
+      # frontend never shows any update UI.
+      pnpm --filter=@modrinth/app run tauri build --bundles deb
+
+      bin=target/release/ModrinthApp
+      if grep -aq 'launcher-files.modrinth.com/updates.json' "$bin" \
+        || grep -rq 'launcher-files.modrinth.com/updates.json' apps/app-frontend/dist; then
+        echo "updater endpoint is still in the build"
+        exit 1
+      fi
+
+      cp -a target/release/bundle/deb/*/data/usr "$CRAFT_PART_INSTALL"/
       # Rename desktop file — the space in the original name causes issues with
       # snapd's desktop file installation
       mv "$CRAFT_PART_INSTALL/usr/share/applications/Modrinth App.desktop" \
@@ -50,23 +95,6 @@ parts:
       # Patch icon to absolute snap path; snapd expands ${SNAP} in desktop files
       sed -i 's|^Icon=.*|Icon=${SNAP}/usr/share/icons/hicolor/256x256@2/apps/ModrinthApp.png|' \
          "$CRAFT_PART_INSTALL/usr/share/applications/modrinth-app.desktop"
-      # Neuter the in-app updater — it can't work under strict confinement, so the
-      # "Update" button is a dead end. Tauri validates the updater endpoint's URL
-      # scheme at config-deserialization time, before any network call, and
-      # rejects anything but https ("the configured updater endpoint must use a
-      # secure protocol like `https`") — so corrupting the scheme itself (e.g.
-      # https -> httpx) crashes startup with PluginInitialization instead of
-      # disabling the updater. Instead, keep the https scheme but repoint the
-      # host at the RFC 2606 reserved .invalid TLD, which never resolves: the
-      # scheme check passes, the later network check fails, and Modrinth's
-      # updater_impl.rs treats a failed check as a no-op.
-      # Must be an in-place, same-length edit so the ELF stays valid.
-      bin="$CRAFT_PART_INSTALL/usr/bin/ModrinthApp"
-      old='https://launcher-files.modrinth.com/updates.json'
-      new='https://launcher-files.modrinth.invalid/upd.json'
-      [ "${#old}" -eq "${#new}" ] || { echo "replacement length mismatch — would corrupt the ELF"; exit 1; }
-      grep -q "$old" "$bin" || { echo "updater endpoint not found — Modrinth changed it"; exit 1; }
-      perl -0777 -pi -e "s{\Q$old\E}{$new}g" "$bin"
 
   launcher:
     plugin: dump
@@ -74,6 +102,9 @@ parts:
     organize:
       launcher: bin/launcher
       xdg-open: bin/xdg-open
+    stage:
+      - bin/launcher
+      - bin/xdg-open
 
 apps:
   modrinth:

@@ -12,10 +12,15 @@ sudo snap install modrinth
 
 ## Build from source
 
-1. Download the Modrinth App `.deb` and save it as `modrinth-app.deb` in the repository root.
-2. Install Snapcraft: `sudo snap install snapcraft --classic`
-3. Build the snap (Ubuntu 24.04 host required): `snapcraft pack`
-4. Install locally: `sudo snap install --dangerous modrinth_*.snap`
+The snap builds Modrinth App from the [upstream source](https://github.com/modrinth/code) at the tag set by `source-tag` in `snap/snapcraft.yaml`, with the patches in `snap/local/patches` applied.
+
+1. Install Snapcraft: `sudo snap install snapcraft --classic`
+2. Build the snap: `snapcraft pack`
+3. Install locally: `sudo snap install --dangerous modrinth_*.snap`
+
+## Updates
+
+The in-app updater is disabled, and the snap is updated by snapd. The build leaves out upstream's `updater` Cargo feature, so the updater isn't compiled in.
 
 ## Data location
 
